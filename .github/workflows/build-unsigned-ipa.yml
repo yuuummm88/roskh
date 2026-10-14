@@ -1,0 +1,56 @@
+
+name: Build Unsigned iOS IPA
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Check Xcode project
+        run: |
+          find . -name "*.xcodeproj" -print
+          find . -name "*.xcworkspace" -print
+          echo "Checking available project files"
+
+      - name: Build iOS app
+        run: |
+          set -e
+          PROJECT=$(find . -name "*.xcodeproj" -print -quit)
+          if [ -z "$PROJECT" ]; then
+            echo "No Xcode project found. Check project structure."
+            exit 1
+          fi
+          xcodebuild -list -project "$PROJECT"
+          SCHEME=$(xcodebuild -list -json -project "$PROJECT" |
+            python3 -c 'import json,sys; print(json.load(sys.stdin)["project"]["schemes"][0])')
+          xcodebuild \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Package unsigned IPA
+        run: |
+          set -e
+          APP=$(find build/Build/Products/Release-iphoneos \
+            -maxdepth 1 -name "*.app" -print -quit)
+          test -n "$APP"
+          mkdir -p ipa/Payload
+          cp -R "$APP" ipa/Payload/
+          cd ipa
+          zip -r ../unsigned-ios.ipa Payload
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-ios-ipa
+          path: unsigned-ios.ipa
