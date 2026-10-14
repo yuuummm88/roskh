@@ -1,0 +1,77 @@
+name: Build unsigned iOS IPA
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-unsigned-ipa:
+    name: Build launcher IPA for eSign
+    runs-on: macos-15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Select Xcode 16.4
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '16.4'
+
+      - name: Verify Xcode and target
+        run: xcodebuild -version
+
+      - name: Generate original app icon
+        run: swift Scripts/generate_app_icon.swift
+
+      - name: Resolve Swift package dependencies
+        run: xcodebuild -resolvePackageDependencies -project ROSCAMBO.xcodeproj -scheme ROSCAMBO
+
+      - name: Build unsigned iOS app
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project ROSCAMBO.xcodeproj \
+            -scheme ROSCAMBO \
+            -destination 'generic/platform=iOS' \
+            -configuration Release \
+            -derivedDataPath "$RUNNER_TEMP/ROSCAMBO-DerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY='' \
+            build
+
+      - name: Package app as unsigned IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_PATH="$RUNNER_TEMP/ROSCAMBO-DerivedData/Build/Products/Release-iphoneos/ROSCAMBO.app"
+          IPA_PATH="$GITHUB_WORKSPACE/ROSCAMBO-unsigned.ipa"
+          test -d "$APP_PATH"
+
+          APP_BUNDLE_ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_PATH/Info.plist")
+          APP_EXECUTABLE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP_PATH/Info.plist")
+          test -n "$APP_BUNDLE_ID"
+          test -f "$APP_PATH/$APP_EXECUTABLE"
+
+          mkdir -p "$RUNNER_TEMP/ipa/Payload"
+          ditto "$APP_PATH" "$RUNNER_TEMP/ipa/Payload/ROSCAMBO.app"
+          (cd "$RUNNER_TEMP/ipa" && /usr/bin/zip -qry "$IPA_PATH" Payload)
+
+          test -s "$IPA_PATH"
+          /usr/bin/unzip -tq "$IPA_PATH"
+          ENTRY_LIST="$RUNNER_TEMP/ipa-entries.txt"
+          /usr/bin/unzip -Z1 "$IPA_PATH" > "$ENTRY_LIST"
+          /usr/bin/grep -Fxq 'Payload/ROSCAMBO.app/Info.plist' "$ENTRY_LIST"
+          /usr/bin/grep -Fxq "Payload/ROSCAMBO.app/$APP_EXECUTABLE" "$ENTRY_LIST"
+          echo "Verified IPA: $IPA_PATH (bundle ID: $APP_BUNDLE_ID)"
+          /usr/bin/shasum -a 256 "$IPA_PATH"
+
+      - name: Upload IPA for eSign
+        uses: actions/upload-artifact@v4
+        with:
+          name: ROSCAMBO-unsigned-IPA
+          path: ROSCAMBO-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 7
